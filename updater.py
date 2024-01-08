@@ -1,153 +1,234 @@
 """
-This script is used for managing Python project dependencies with Poetry.
-It parses the pyproject.toml file, removes all dependencies except Python,
-and then adds them back using the `poetry add` command. This is useful for
-updating all dependencies to their latest versions.
+This module, updater.py, is designed to automate the process of updating Python project dependencies 
+using the Poetry dependency management tool. It offers functionality to handle updating dependencies 
+to their latest versions, managing the 'poetry.lock' file, and supporting command line arguments to 
+customize file paths.
 
-This script also handles the removal of the poetry.lock file before updating
-the dependencies.
+The module is part of a project that requires Python 3.6 or higher and has dependencies on 'toml' and 'loguru' libraries.
 
-This script accepts two optional command line arguments:
--p or --pyproject: Path to the pyproject.toml file (default is "pyproject.toml")
--l or --lockfile: Path to the poetry.lock file (default is "poetry.lock")
+Key Features:
+- Automated Dependency Updates: Facilitates updating all project dependencies to their latest versions.
+- Lockfile Management: Automates the removal and updating of the 'poetry.lock' file.
+- Command Line Argument Support: Allows specifying custom paths for 'pyproject.toml' and 'poetry.lock' files.
+
+Functions:
+- setup_logging(): Configures the logging settings.
+- remove_poetry_lock(lock_file_path): Removes the 'poetry.lock' file if it exists.
+- parse_toml(file_path): Parses the TOML file and extracts package information.
+- extract_packages(data): Extracts package information from parsed TOML data.
+- update_toml(file_path, data): Updates the TOML file with new data.
+- generate_poetry_add_commands(packages): Generates Poetry 'add' commands for the packages.
+- generate_package_command(pkg, details): Generates a command part for a single package.
+- run_command(command): Executes a shell command and logs its output.
+- run_commands(commands): Runs a list of shell commands.
+- parse_arguments(): Parses command-line arguments.
+
+Usage:
+This script can be executed from the command line, with optional arguments for specifying the paths to the 
+'pyproject.toml' and 'poetry.lock' files. For example:
+    python updater.py --pyproject my_project/pyproject.toml --lockfile my_project/poetry.lock
+
+Dependencies:
+- toml: A library for parsing and writing TOML files.
+- loguru: A library for simplified logging.
+
+Note:
+This script is a part of a Python project licensed under the GNU General Public License v3.0. 
+Ensure your use case complies with the license terms.
 """
 
 import argparse
 import os
 import subprocess
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import toml
 from loguru import logger
 
-# Logger Configuration
-logger.remove()
-logger.add(
-    lambda msg: print(msg, end=""),
-    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{message}</cyan>",
-)
+
+def setup_logging():
+    """
+    Sets up logging configurations.
+    """
+    logger.remove()
+    logger.add(
+        lambda msg: print(msg, end=""),
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{message}</cyan>",
+    )
 
 
 def remove_poetry_lock(lock_file_path: str) -> None:
     """
-    Remove the specified poetry lock file if it exists.
+    Removes the poetry lock file if it exists.
 
     Args:
-        lock_file_path (str): Path to the poetry lock file.
+        lock_file_path (str): Path to the poetry.lock file.
     """
-    # Check if the file exists
     if os.path.exists(lock_file_path):
         try:
-            # Try to remove the file
             os.remove(lock_file_path)
             logger.info(f"Removed {lock_file_path}")
         except OSError as e:
-            # Log an error if the file could not be removed
             logger.error(f"Error removing file {lock_file_path}: {e}")
+            raise
 
 
-def parse_and_update_toml(file_path: str) -> Dict[str, Dict]:
+def parse_toml(file_path: str) -> Tuple[Dict[str, Dict], Dict[str, Any]]:
     """
-    Parse the TOML file and extract package dependencies,
-    updating the file by removing these dependencies except for Python.
+    Parses the TOML file and extracts package information.
 
     Args:
         file_path (str): Path to the TOML file.
 
     Returns:
-        Dict[str, Dict]: Extracted package dependencies categorized by group.
+        Tuple[Dict[str, Dict], Dict[str, Any]]: Extracted package information and updated data.
     """
     try:
-        # Open the file and load the TOML data
         with open(file_path, "r") as file:
             data = toml.load(file)
 
-        packages = {}
-        poetry_data = data.get("tool", {}).get("poetry", {})
+        packages, updated_data = extract_packages(data)
+        return packages, updated_data
+    except FileNotFoundError:
+        logger.error(f"File not found: {file_path}")
+        raise
+    except Exception as e:
+        logger.error(f"Error parsing TOML file {file_path}: {e}")
+        raise
 
-        # Preserve Python dependency
-        main_deps = poetry_data.get("dependencies", {})
-        python_dep = main_deps.get("python", None)
-        packages["main"] = {k: v for k, v in main_deps.items() if k != "python"}
-        poetry_data["dependencies"] = {"python": python_dep} if python_dep else {}
 
-        # Extract group dependencies and remove them from the TOML data
-        for group, group_data in poetry_data.get("group", {}).items():
-            group_deps = group_data.get("dependencies", {})
-            packages[group] = group_deps
-            group_data["dependencies"] = {}
+def extract_packages(data: Dict[str, Any]) -> Tuple[Dict[str, Dict], Dict[str, Any]]:
+    """
+    Extracts package information from the TOML data.
 
-        # Write the updated TOML data back to the file
+    Args:
+        data (Dict[str, Any]): The parsed TOML data.
+
+    Returns:
+        Tuple[Dict[str, Dict], Dict[str, Any]]: Extracted package information and updated data.
+    """
+    packages = {}
+    poetry_data = data.get("tool", {}).get("poetry", {})
+    main_deps = poetry_data.get("dependencies", {})
+    packages["main"] = {k: v for k, v in main_deps.items() if k != "python"}
+
+    poetry_data["dependencies"] = {k: v for k, v in main_deps.items() if k == "python"}
+
+    for group, group_data in poetry_data.get("group", {}).items():
+        group_deps = group_data.get("dependencies", {})
+        packages[group] = group_deps
+        poetry_data["group"][group]["dependencies"] = {}
+
+    return packages, data
+
+
+def update_toml(file_path: str, data: Dict[str, Any]) -> None:
+    """
+    Updates the TOML file with new data.
+
+    Args:
+        file_path (str): Path to the TOML file.
+        data (Dict[str, Any]): Data to write to the file.
+    """
+    try:
         with open(file_path, "w") as file:
             toml.dump(data, file)
-
-        return packages
+            logger.info(f"Updated {file_path}")
     except Exception as e:
-        logger.error(f"Error parsing and updating TOML file {file_path}: {e}")
-        return {}
+        logger.error(f"Error updating TOML file {file_path}: {e}")
+        raise
 
 
 def generate_poetry_add_commands(packages: Dict[str, Dict]) -> List[str]:
     """
-    Generate poetry add commands from the extracted packages.
+    Generates poetry add commands for the packages.
 
     Args:
-        packages (Dict[str, Dict]): Packages and their details.
+        packages (Dict[str, Dict]): The packages to generate commands for.
 
     Returns:
-        List[str]: List of poetry add commands.
+        List[str]: A list of poetry add commands.
     """
     commands = []
     for group, deps in packages.items():
         group_command_parts = []
         for pkg, details in deps.items():
             try:
-                # Handle packages with extras
-                if isinstance(details, dict) and "extras" in details:
-                    extras = ",".join(details["extras"])
-                    package_command = f"'{pkg}[{extras}]'@latest"
-                else:
-                    # Handle packages without extras
-                    version = details if isinstance(details, str) else "latest"
-                    package_command = f"{pkg}@latest"
+                package_command = generate_package_command(pkg, details)
                 group_command_parts.append(package_command)
             except Exception as e:
-                logger.error(f"Error generating command part for package {pkg}: {e}")
+                logger.error(f"Error generating command for package {pkg}: {e}")
 
-        # Generate the poetry add command for the group
         if group_command_parts:
-            group_command = (
-                "poetry add " + " ".join(group_command_parts) + f" --group {group}"
-            )
-            commands.append(group_command)
+            command = "poetry add " + " ".join(group_command_parts)
+            if group != "main":
+                command += f" -G {group}"
+            commands.append(command)
 
     return commands
 
 
-def run_commands(commands: List[str]) -> None:
+def generate_package_command(pkg: str, details: Any) -> str:
     """
-    Execute the given list of commands.
+    Generates a command part for a single package.
 
     Args:
-        commands (List[str]): List of commands to be executed.
+        pkg (str): The package name.
+        details (Any): The package details.
+
+    Returns:
+        str: The generated command part.
+    """
+    if isinstance(details, dict) and "extras" in details:
+        extras = ",".join(details["extras"])
+        return f"'{pkg}[{extras}]'@latest"
+    else:
+        return f"{pkg}@latest"
+
+
+def run_command(command: str) -> None:
+    """
+    Runs a shell command and logs its output.
+
+    Args:
+        command (str): The command to run.
+    """
+    try:
+        logger.info(f"Executing: {command}")
+        result = subprocess.run(
+            command,
+            shell=True,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        logger.info(f"Output: {result.stdout.decode().strip()}")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Error executing command {command}: {e.stderr.decode().strip()}")
+        raise RuntimeError(f"Command execution failed: {e}")
+
+
+def run_commands(commands: List[str]) -> None:
+    """
+    Runs a list of shell commands.
+
+    Args:
+        commands (List[str]): The commands to run.
     """
     for cmd in commands:
         try:
-            # Log the command being executed
-            logger.info(f"Executing: {cmd}")
-            # Run the command
-            subprocess.run(cmd, shell=True)
-        except Exception as e:
-            # Log an error if the command fails
-            logger.error(f"Error executing command {cmd}: {e}")
+            run_command(cmd)
+        except RuntimeError as e:
+            logger.error(f"Failed to execute command: {e}")
+            break
 
 
-def parse_arguments():
+def parse_arguments() -> argparse.Namespace:
     """
-    Parse command line arguments to get file paths for pyproject.toml and poetry.lock.
+    Parses command-line arguments.
 
     Returns:
-        argparse.Namespace: Parsed arguments with file paths.
+        argparse.Namespace: The parsed arguments.
     """
     parser = argparse.ArgumentParser(description="Poetry Dependency Management Script")
     parser.add_argument(
@@ -163,25 +244,18 @@ def parse_arguments():
 
 
 if __name__ == "__main__":
-    # Parse command line arguments
+    setup_logging()
     args = parse_arguments()
 
-    project_file_path = args.pyproject
-    lock_file_path = args.lockfile
-
-    # Remove the poetry lock file
-    remove_poetry_lock(lock_file_path)
-
     try:
-        # Parse the TOML file and update it
-        packages = parse_and_update_toml(project_file_path)
+        packages, updated_data = parse_toml(args.pyproject)
+        remove_poetry_lock(args.lockfile)
+        update_toml(args.pyproject, updated_data)
+
         if packages:
-            # Generate poetry add commands and run them
             commands = generate_poetry_add_commands(packages)
             run_commands(commands)
         else:
-            logger.warning(
-                "No packages found or an error occurred while parsing the TOML file."
-            )
-    except FileNotFoundError as e:
-        logger.error(f"File not found: {e}")
+            logger.warning("No packages found to update.")
+    except Exception as e:
+        logger.error(f"An error occurred: {e}")
