@@ -53,7 +53,7 @@ def setup_logging():
     logger.remove()
     logger.add(
         lambda msg: print(msg, end=""),
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{message}</cyan>",
+        format="🚀 <green>executed at: {time:YYYY-MM-DD at HH:mm:ss}</green> | <k><b>module:</b> {module}</k> <b>⇨</b> <e><b>function:</b> {function}</e> <b>⇨</b> <c><b>line #:</b> {line}</c> |  <yellow><b>elapsed time:</b> <u>{elapsed}</u></yellow> | <level><b>{level}</b></level> ⇨ {message} <red>{exception}</red>",
     )
 
 
@@ -73,22 +73,20 @@ def remove_poetry_lock(lock_file_path: str) -> None:
             raise
 
 
-def parse_toml(file_path: str) -> Tuple[Dict[str, Dict], Dict[str, Any]]:
+def parse_toml(file_path: str) -> Dict[str, Any]:
     """
-    Parses the TOML file and extracts package information.
+    Parses the TOML file and returns the parsed data.
 
     Args:
         file_path (str): Path to the TOML file.
 
     Returns:
-        Tuple[Dict[str, Dict], Dict[str, Any]]: Extracted package information and updated data.
+        Dict[str, Any]: Parsed data from the TOML file.
     """
     try:
         with open(file_path, "r") as file:
             data = toml.load(file)
-
-        packages, updated_data = extract_packages(data)
-        return packages, updated_data
+        return data
     except FileNotFoundError:
         logger.error(f"File not found: {file_path}")
         raise
@@ -97,43 +95,48 @@ def parse_toml(file_path: str) -> Tuple[Dict[str, Dict], Dict[str, Any]]:
         raise
 
 
-def extract_packages(data: Dict[str, Any]) -> Tuple[Dict[str, Dict], Dict[str, Any]]:
+def extract_packages(data: Dict[str, Any]) -> Dict[str, Dict]:
     """
-    Extracts package information from the TOML data.
+    Extracts package information from parsed TOML data.
 
     Args:
         data (Dict[str, Any]): The parsed TOML data.
 
     Returns:
-        Tuple[Dict[str, Dict], Dict[str, Any]]: Extracted package information and updated data.
+        Dict[str, Dict]: Extracted package information.
     """
-    packages = {}
+    packages = {"main": {}}
     poetry_data = data.get("tool", {}).get("poetry", {})
     main_deps = poetry_data.get("dependencies", {})
-    packages["main"] = {k: v for k, v in main_deps.items() if k != "python"}
-
-    poetry_data["dependencies"] = {k: v for k, v in main_deps.items() if k == "python"}
+    packages["main"].update({k: v for k, v in main_deps.items() if k != "python"})
 
     for group, group_data in poetry_data.get("group", {}).items():
         group_deps = group_data.get("dependencies", {})
         packages[group] = group_deps
-        poetry_data["group"][group]["dependencies"] = {}
 
-    return packages, data
+    return packages
 
-
-def update_toml(file_path: str, data: Dict[str, Any]) -> None:
+def update_toml(file_path: str, packages: Dict[str, Dict]) -> None:
     """
-    Updates the TOML file with new data.
+    Updates the TOML file by removing the lines with package names but keeping section headers.
 
     Args:
         file_path (str): Path to the TOML file.
-        data (Dict[str, Any]): Data to write to the file.
+        packages (Dict[str, Dict]): Package information to be removed from the file.
     """
     try:
+        with open(file_path, "r") as file:
+            lines = file.readlines()
+
+        package_names = [pkg for group in packages.values() for pkg in group.keys()]
+
         with open(file_path, "w") as file:
-            toml.dump(data, file)
-            logger.info(f"Updated {file_path}")
+            for line in lines:
+                # Check if the line is a section header or does not contain a package name
+                if line.strip().startswith('[') or not any(package_name in line for package_name in package_names):
+                    file.write(line)
+
+        logger.info(f"Updated {file_path}")
     except Exception as e:
         logger.error(f"Error updating TOML file {file_path}: {e}")
         raise
@@ -248,9 +251,10 @@ if __name__ == "__main__":
     args = parse_arguments()
 
     try:
-        packages, updated_data = parse_toml(args.pyproject)
+        data = parse_toml(args.pyproject)
+        packages = extract_packages(data)
         remove_poetry_lock(args.lockfile)
-        update_toml(args.pyproject, updated_data)
+        update_toml(args.pyproject, packages)  # Refactored call
 
         if packages:
             commands = generate_poetry_add_commands(packages)
